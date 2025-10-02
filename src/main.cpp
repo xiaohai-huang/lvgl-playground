@@ -1,68 +1,221 @@
-
-#include "demos/lv_demos.h"
 #include <Arduino.h>
-#include <TFT_eSPI.h>
+#include <simfang_16.h>
+#include <display.h>
 #include <lvgl.h>
 
-/*Set to your screen resolution and rotation*/
-#define TFT_HOR_RES 320
-#define TFT_VER_RES 240
-#define TFT_ROTATION LV_DISPLAY_ROTATION_90
+// Create subjects for each valve state
+static lv_subject_t opening_subject;
+static lv_subject_t closing_subject;
+static lv_subject_t open_position_subject;
+static lv_subject_t close_position_subject;
+static lv_subject_t remote_subject;
+static lv_subject_t fault_subject;
 
-/*LVGL draw into this buffer, 1/10 screen size usually works well. The size is in bytes*/
-#define DRAW_BUF_SIZE (TFT_HOR_RES * TFT_VER_RES / 10 * (LV_COLOR_DEPTH / 8))
-uint32_t draw_buf[DRAW_BUF_SIZE / 4];
+// Forward declarations for observer callbacks
+static void opening_observer_cb(lv_observer_t *observer, lv_subject_t *subject);
+static void closing_observer_cb(lv_observer_t *observer, lv_subject_t *subject);
+static void open_position_observer_cb(lv_observer_t *observer, lv_subject_t *subject);
+static void close_position_observer_cb(lv_observer_t *observer, lv_subject_t *subject);
+static void remote_observer_cb(lv_observer_t *observer, lv_subject_t *subject);
+static void fault_observer_cb(lv_observer_t *observer, lv_subject_t *subject);
 
-typedef struct
+static void open_valve_event_cb(lv_event_t *e)
 {
-  TFT_eSPI *tft;
-} lv_tft_espi_t;
+  // Send command to open the valve
+  Serial.println("Open valve");
 
-/* Tick source, tell LVGL how much time (milliseconds) has passed */
-static uint32_t my_tick(void)
-{
-  return millis();
+  // Update subjects to reflect the new state
+  lv_subject_set_int(&opening_subject, 1);
+  lv_subject_set_int(&closing_subject, 0);
 }
 
-lv_display_t *disp;
-
-void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
+static void close_valve_event_cb(lv_event_t *e)
 {
-  lv_tft_espi_t *dsc = (lv_tft_espi_t *)lv_display_get_driver_data(disp);
+  // Send command to close the valve
+  Serial.println("Close valve");
 
-  uint16_t touchX, touchY;
-  bool touched = dsc->tft->getTouch(&touchY, &touchX);
+  // Update subjects to reflect the new state
+  lv_subject_set_int(&opening_subject, 0);
+  lv_subject_set_int(&closing_subject, 1);
+}
 
-  if (touched)
-  {
-    data->state = LV_INDEV_STATE_PRESSED;
-    // Swap or invert coordinates if needed based on your display rotation
-    data->point.x = touchX;
-    data->point.y = touchY;
-  }
-  else
-  {
-    data->state = LV_INDEV_STATE_RELEASED;
-  }
+static void stop_valve_event_cb(lv_event_t *e)
+{
+  // Send command to stop the valve
+  Serial.println("Stop valve");
+
+  // Update subjects to reflect the new state
+  lv_subject_set_int(&opening_subject, 0);
+  lv_subject_set_int(&closing_subject, 0);
+}
+
+void main_page()
+{
+  lv_obj_t *screen = lv_obj_create(NULL);
+  lv_scr_load(screen);
+
+  // Initialize subjects with default values (0 = false, 1 = true)
+  lv_subject_init_int(&opening_subject, 0);
+  lv_subject_init_int(&closing_subject, 0);
+  lv_subject_init_int(&open_position_subject, 0);
+  lv_subject_init_int(&close_position_subject, 0);
+  lv_subject_init_int(&remote_subject, 0);
+  lv_subject_init_int(&fault_subject, 0);
+
+  // Create a container for the buttons with grid layout
+  lv_obj_t *btnContainer = lv_obj_create(screen);
+  lv_obj_set_scrollbar_mode(btnContainer, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_size(btnContainer, LV_PCT(100), 80);
+  lv_obj_align(btnContainer, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  // Define grid columns and rows
+  static int32_t column_dsc[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
+  static int32_t row_dsc[] = {LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
+
+  // Set grid descriptors
+  lv_obj_set_grid_dsc_array(btnContainer, column_dsc, row_dsc);
+  lv_obj_set_grid_align(btnContainer, LV_GRID_ALIGN_SPACE_BETWEEN, LV_GRID_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(btnContainer, 10, 0); // Gap between buttons
+  lv_obj_set_style_pad_row(btnContainer, 0, 0);
+
+  // Remove default border and background from container
+  lv_obj_set_style_border_width(btnContainer, 0, 0);
+  lv_obj_set_style_bg_opa(btnContainer, LV_OPA_TRANSP, 0);
+
+  // Open valve button
+  lv_obj_t *btnOpen = lv_btn_create(btnContainer);
+  static lv_style_t styleOpen;
+  lv_style_init(&styleOpen);
+  lv_style_set_bg_color(&styleOpen, lv_color_hex(0x00FF00));
+  lv_obj_add_style(btnOpen, &styleOpen, LV_PART_MAIN);
+  lv_obj_set_size(btnOpen, LV_PCT(100), LV_PCT(100));
+  lv_obj_set_grid_cell(btnOpen, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_STRETCH, 0, 1);
+  lv_obj_add_event_cb(btnOpen, open_valve_event_cb, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *labelOpen = lv_label_create(btnOpen);
+  lv_label_set_text(labelOpen, LV_SYMBOL_PLAY " 开阀");
+  lv_obj_set_style_text_color(labelOpen, lv_color_hex(0x000000), 0);
+  lv_obj_set_align(labelOpen, LV_ALIGN_CENTER);
+
+  // Stop button
+  lv_obj_t *btnStop = lv_btn_create(btnContainer);
+  static lv_style_t styleStop;
+  lv_style_init(&styleStop);
+  lv_style_set_bg_color(&styleStop, lv_color_hex(0xFF0000));
+  lv_obj_add_style(btnStop, &styleStop, LV_PART_MAIN);
+  lv_obj_set_size(btnStop, LV_PCT(100), LV_PCT(100));
+  lv_obj_set_grid_cell(btnStop, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_STRETCH, 0, 1);
+  lv_obj_add_event_cb(btnStop, stop_valve_event_cb, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *labelStop = lv_label_create(btnStop);
+  lv_label_set_text(labelStop, LV_SYMBOL_STOP " 停止");
+  lv_obj_set_style_text_color(labelStop, lv_color_hex(0x000000), 0);
+  lv_obj_set_align(labelStop, LV_ALIGN_CENTER);
+
+  // Close valve button
+  lv_obj_t *btnClose = lv_btn_create(btnContainer);
+  static lv_style_t styleClose;
+  lv_style_init(&styleClose);
+  lv_style_set_bg_color(&styleClose, lv_color_hex(0xFFFF00));
+  lv_obj_add_style(btnClose, &styleClose, LV_PART_MAIN);
+  lv_obj_set_size(btnClose, LV_PCT(100), LV_PCT(100));
+  lv_obj_set_grid_cell(btnClose, LV_GRID_ALIGN_STRETCH, 2, 1, LV_GRID_ALIGN_STRETCH, 0, 1);
+  lv_obj_add_event_cb(btnClose, close_valve_event_cb, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *labelClose = lv_label_create(btnClose);
+  lv_label_set_text(labelClose, LV_SYMBOL_MINUS " 关阀");
+  lv_obj_set_style_text_color(labelClose, lv_color_hex(0x000000), 0);
+  lv_obj_set_align(labelClose, LV_ALIGN_CENTER);
+
+  // Status indicators
+  lv_obj_t *labelOpening = lv_label_create(screen);
+  lv_obj_align(labelOpening, LV_ALIGN_TOP_LEFT, 10, 10);
+  lv_label_set_text(labelOpening, "开阀中: -");
+  lv_obj_set_style_text_color(labelOpening, lv_color_hex(0x00FF00), LV_PART_MAIN);
+  // Subscribe to opening_subject as an Observer
+  lv_subject_add_observer_obj(&opening_subject, opening_observer_cb, labelOpening, NULL);
+
+  lv_obj_t *labelClosing = lv_label_create(screen);
+  lv_obj_align(labelClosing, LV_ALIGN_TOP_LEFT, 10, 30);
+  lv_label_set_text(labelClosing, "关阀中: -");
+  lv_obj_set_style_text_color(labelClosing, lv_color_hex(0xFF0000), LV_PART_MAIN);
+  // Subscribe to closing_subject as an Observer
+  lv_subject_add_observer_obj(&closing_subject, closing_observer_cb, labelClosing, NULL);
+
+  lv_obj_t *labelOpenPosition = lv_label_create(screen);
+  lv_obj_align(labelOpenPosition, LV_ALIGN_TOP_LEFT, 10, 50);
+  lv_label_set_text(labelOpenPosition, "开到位: -");
+  lv_obj_set_style_text_color(labelOpenPosition, lv_color_hex(0x00FF00), LV_PART_MAIN);
+  // Subscribe to open_position_subject as an Observer
+  lv_subject_add_observer_obj(&open_position_subject, open_position_observer_cb, labelOpenPosition, NULL);
+
+  lv_obj_t *labelClosePosition = lv_label_create(screen);
+  lv_obj_align(labelClosePosition, LV_ALIGN_TOP_LEFT, 10, 70);
+  lv_label_set_text(labelClosePosition, "关到位: -");
+  lv_obj_set_style_text_color(labelClosePosition, lv_color_hex(0x00FF00), LV_PART_MAIN);
+  // Subscribe to close_position_subject as an Observer
+  lv_subject_add_observer_obj(&close_position_subject, close_position_observer_cb, labelClosePosition, NULL);
+
+  lv_obj_t *labelRemote = lv_label_create(screen);
+  lv_obj_align(labelRemote, LV_ALIGN_TOP_LEFT, 10, 90);
+  lv_label_set_text(labelRemote, "远程: -");
+  lv_obj_set_style_text_color(labelRemote, lv_color_hex(0x0000FF), LV_PART_MAIN);
+  // Subscribe to remote_subject as an Observer
+  lv_subject_add_observer_obj(&remote_subject, remote_observer_cb, labelRemote, NULL);
+
+  lv_obj_t *labelFault = lv_label_create(screen);
+  lv_obj_align(labelFault, LV_ALIGN_TOP_LEFT, 10, 110);
+  lv_label_set_text(labelFault, "故障: -");
+  lv_obj_set_style_text_color(labelFault, lv_color_hex(0xFF0000), LV_PART_MAIN);
+  // Subscribe to fault_subject as an Observer
+  lv_subject_add_observer_obj(&fault_subject, fault_observer_cb, labelFault, NULL);
+}
+
+// Observer callback functions
+static void opening_observer_cb(lv_observer_t *observer, lv_subject_t *subject)
+{
+  lv_obj_t *label = lv_observer_get_target_obj(observer);
+  int32_t value = lv_subject_get_int(subject);
+  lv_label_set_text_fmt(label, "开阀中: %s", value ? "是" : "否");
+}
+
+static void closing_observer_cb(lv_observer_t *observer, lv_subject_t *subject)
+{
+  lv_obj_t *label = lv_observer_get_target_obj(observer);
+  int32_t value = lv_subject_get_int(subject);
+  lv_label_set_text_fmt(label, "关阀中: %s", value ? "是" : "否");
+}
+
+static void open_position_observer_cb(lv_observer_t *observer, lv_subject_t *subject)
+{
+  lv_obj_t *label = lv_observer_get_target_obj(observer);
+  int32_t value = lv_subject_get_int(subject);
+  lv_label_set_text_fmt(label, "开到位: %s", value ? "是" : "否");
+}
+
+static void close_position_observer_cb(lv_observer_t *observer, lv_subject_t *subject)
+{
+  lv_obj_t *label = lv_observer_get_target_obj(observer);
+  int32_t value = lv_subject_get_int(subject);
+  lv_label_set_text_fmt(label, "关到位: %s", value ? "是" : "否");
+}
+
+static void remote_observer_cb(lv_observer_t *observer, lv_subject_t *subject)
+{
+  lv_obj_t *label = lv_observer_get_target_obj(observer);
+  int32_t value = lv_subject_get_int(subject);
+  lv_label_set_text_fmt(label, "远程: %s", value ? "是" : "否");
+}
+
+static void fault_observer_cb(lv_observer_t *observer, lv_subject_t *subject)
+{
+  lv_obj_t *label = lv_observer_get_target_obj(observer);
+  int32_t value = lv_subject_get_int(subject);
+  lv_label_set_text_fmt(label, "故障: %s", value ? "是" : "否");
 }
 
 void setup(void)
 {
-  /* Initialize LVGL */
-  lv_init();
-  /* Set the tick callback */
-  lv_tick_set_cb(my_tick);
-
-  disp = lv_tft_espi_create(TFT_VER_RES, TFT_HOR_RES, draw_buf, sizeof(draw_buf));
-  lv_display_set_rotation(disp, TFT_ROTATION);
-
-  lv_indev_t *indev = lv_indev_create();
-  lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER); /*Touchpad should have POINTER type*/
-  lv_indev_set_read_cb(indev, my_touchpad_read);
-
-  lv_obj_t *label = lv_label_create(lv_screen_active());
-  lv_label_set_text(label, "你好");
-  lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
+  Serial.begin(115200);
+  display_init();
+  main_page();
 }
 
 void loop()
