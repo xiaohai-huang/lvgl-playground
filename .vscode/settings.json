@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "*.uxml": "xml",
+        "*.uss": "css",
+        "lv_3dtexture.h": "c"
+    }
+}
